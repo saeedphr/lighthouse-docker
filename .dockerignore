@@ -1,0 +1,11 @@
+# Add this to .dockerignore to reduce image size and build time
+node_modules
+npm-debug.log
+.git
+.gitignore
+README.md
+DOCKER_HUB.md
+LICENSE
+.env
+.DS_Store
+*.md

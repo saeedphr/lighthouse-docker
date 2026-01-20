@@ -1,0 +1,40 @@
+services:
+  lighthouse:
+    build: .
+    container_name: lighthouse_docker
+    ports:
+      - "3000:3000"
+    environment:
+      # Core Settings (hardcoded - not shown in UI)
+      - CHROME_PATH=/usr/bin/chromium
+      - NODE_TLS_REJECT_UNAUTHORIZED=0
+      
+      # Server Settings (shown in Coolify UI with defaults)
+      - PORT=${PORT:-3000}
+      - MAX_REDIRECTS=${MAX_REDIRECTS:-10}
+      - LIGHTHOUSE_TIMEOUT=${LIGHTHOUSE_TIMEOUT:-180000}
+      - DEFAULT_DEVICE=${DEFAULT_DEVICE:-mobile}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      
+      # UI Customization (shown in Coolify UI with defaults)
+      - PAGE_TITLE=${PAGE_TITLE:-Lighthouse Audit Tool}
+      - ENABLE_HTTP_FALLBACK=${ENABLE_HTTP_FALLBACK:-false}
+      
+      # Chrome Customization (shown in Coolify UI)
+      - EXTRA_CHROME_FLAGS=${EXTRA_CHROME_FLAGS}
+    # Important: Required for Chrome to run in Docker
+    cap_add:
+      - SYS_ADMIN
+    # Increase shared memory for Chrome stability
+    shm_size: '2gb'
+    # Security options for Chrome in containers
+    security_opt:
+      - seccomp:unconfined
+    # Health check configuration
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+      start_period: 10s
