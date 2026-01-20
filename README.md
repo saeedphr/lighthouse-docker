@@ -23,17 +23,29 @@ A lightweight, containerized Google Lighthouse audit service built on Alpine Lin
 
 ## 🚀 Quick Start
 
-### 1. Clone or Download
+### Option 1: Using Docker Compose (Recommended)
 
 ```bash
-git clone <your-repo-url>
-cd lighthouse-docker
+# Download docker-compose.yml
+curl -O https://raw.githubusercontent.com/saeedphr/lighthouse-docker/main/docker-compose.yml
+
+# Start the service
+docker-compose up -d
 ```
 
-### 2. Start the Service
+### Option 2: Using Docker Run
 
 ```bash
-docker-compose up --build
+docker run -d -p 3000:3000 --cap-add=SYS_ADMIN --shm-size=2gb saeedp/lighthouse-docker:latest
+```
+
+### Option 3: Clone and Build
+
+```bash
+git clone https://github.com/saeedphr/lighthouse-docker.git
+cd lighthouse-docker
+docker build -t lighthouse-docker .
+docker-compose up -d
 ```
 
 The service will be available at `http://localhost:3000`
@@ -201,29 +213,31 @@ docker push yourusername/lighthouse-docker:latest
 
 ### Using the Published Image
 
-Once published, others can use your image directly:
+The image is available on Docker Hub:
 
 **docker-compose.yml:**
 ```yaml
 services:
   lighthouse:
-    image: yourusername/lighthouse-docker:latest
+    image: saeedp/lighthouse-docker:latest
     container_name: lighthouse_docker
     ports:
       - "3000:3000"
     cap_add:
       - SYS_ADMIN
+    shm_size: '2gb'
 ```
 
 **Or with Docker run:**
 ```bash
-docker run -d -p 3000:3000 --cap-add=SYS_ADMIN yourusername/lighthouse-docker:latest
+docker run -d -p 3000:3000 --cap-add=SYS_ADMIN --shm-size=2gb saeedp/lighthouse-docker:latest
 ```
 
 **Coolify Deployment:**
-- Image: `yourusername/lighthouse-docker:latest` (without "docker pull")
+- Image: `saeedp/lighthouse-docker:latest`
 - Port: `3000`
 - Add capability: `SYS_ADMIN`
+- Shared memory: `2gb`
 
 ### Multi-Platform Builds (Optional)
 
