@@ -3,7 +3,7 @@
 A lightweight, containerized Google Lighthouse audit service built on Alpine Linux with Node.js. Run web performance audits through a simple web interface or REST API.
 
 [![Docker Hub](https://img.shields.io/badge/docker-saeedp%2Flighthouse--docker-blue)](https://hub.docker.com/r/saeedp/lighthouse-docker)
-[![Version](https://img.shields.io/badge/version-1.1.0-green)](https://github.com/yourusername/lighthouse-docker)
+[![Version](https://img.shields.io/badge/version-1.3.0-green)](https://github.com/saeedphr/lighthouse-docker)
 
 ## ✨ Features
 

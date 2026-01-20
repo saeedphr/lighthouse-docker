@@ -207,7 +207,7 @@ app.get('/', (req, res) => {
             </div>
 
             <div class="footer">
-                <div>🐳 <a href="https://hub.docker.com/r/saeedp/lighthouse-docker" target="_blank" rel="noopener">Docker Hub: saeedp/lighthouse-docker</a> <span style="color: #999;">v${VERSION}</span></div>
+                <div>🐳 <a href="https://hub.docker.com/r/saeedp/lighthouse-docker" target="_blank" rel="noopener">Docker Hub</a> | <a href="https://github.com/saeedphr/lighthouse-docker" target="_blank" rel="noopener">GitHub</a> <span style="color: #999;">v${VERSION}</span></div>
                 <div style="margin-top: 8px;">Built with Alpine Linux, Node.js & Lighthouse</div>
             </div>
         </div>
