@@ -1,6 +1,6 @@
 services:
   lighthouse:
-    build: .
+    image: saeedp/lighthouse-docker:latest
     container_name: lighthouse_docker
     ports:
       - "3000:3000"
