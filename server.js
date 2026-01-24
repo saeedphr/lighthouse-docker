@@ -328,7 +328,7 @@ app.get('/analyze', async (req, res) => {
     console.log(`Chrome launched on port: ${chrome.port}`);
 
     // Small delay to ensure Chrome is fully ready
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await new Promise(resolve => setTimeout(resolve, 1500));
 
     const options = {
       logLevel: LOG_LEVEL,
@@ -338,7 +338,11 @@ app.get('/analyze', async (req, res) => {
       formFactor: deviceSettings.formFactor,
       screenEmulation: deviceSettings.screenEmulation,
       throttling: deviceSettings.throttling,
-      preset: 'lighthouse:default' // Explicitly set preset to avoid performance mark errors
+      preset: 'lighthouse:default', // Explicitly set preset to avoid performance mark errors
+      skipAboutBlank: false, // Ensure navigation marks are properly initialized
+      maxWaitForLoad: 45000, // Maximum time to wait for page load (45 seconds)
+      maxWaitForFcp: 30000, // Maximum time to wait for FCP (30 seconds)
+      maxWaitForLoadIdle: 2000 // Maximum time to wait for network idle (2 seconds)
     };
 
     // Run Lighthouse with retry logic for performance mark errors
@@ -349,11 +353,19 @@ app.get('/analyze', async (req, res) => {
         runnerResult = await lighthouse(url, options);
         break;
       } catch (error) {
-        if (error.message && error.message.includes('performance mark') && retries > 0) {
-          console.log(`Performance mark error detected, retrying... (${retries} retries left)`);
+        // Check for various performance mark errors (gather, navigate, etc.)
+        const isPerformanceMarkError = error.message && (
+          error.message.includes('performance mark') ||
+          error.message.includes('lh:runner:gather') ||
+          error.message.includes('lh:driver:navigate') ||
+          error.message.includes('lh:runner')
+        );
+        
+        if (isPerformanceMarkError && retries > 0) {
+          console.log(`Performance mark error detected (${error.message}), retrying... (${retries} retries left)`);
           retries--;
-          // Wait a bit longer before retry
-          await new Promise(resolve => setTimeout(resolve, 2000));
+          // Wait longer before retry and ensure Chrome is ready
+          await new Promise(resolve => setTimeout(resolve, 3000));
           continue;
         }
         throw error;
@@ -546,7 +558,7 @@ app.get('/api/analyze', async (req, res) => {
     });
 
     // Small delay to ensure Chrome is fully ready
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await new Promise(resolve => setTimeout(resolve, 1500));
 
     const options = {
       logLevel: LOG_LEVEL,
@@ -556,7 +568,11 @@ app.get('/api/analyze', async (req, res) => {
       formFactor: deviceSettings.formFactor,
       screenEmulation: deviceSettings.screenEmulation,
       throttling: deviceSettings.throttling,
-      preset: 'lighthouse:default' // Explicitly set preset to avoid performance mark errors
+      preset: 'lighthouse:default', // Explicitly set preset to avoid performance mark errors
+      skipAboutBlank: false, // Ensure navigation marks are properly initialized
+      maxWaitForLoad: 45000, // Maximum time to wait for page load (45 seconds)
+      maxWaitForFcp: 30000, // Maximum time to wait for FCP (30 seconds)
+      maxWaitForLoadIdle: 2000 // Maximum time to wait for network idle (2 seconds)
     };
 
     // Run Lighthouse with timeout and retry logic for performance mark errors
@@ -572,11 +588,19 @@ app.get('/api/analyze', async (req, res) => {
         ]);
         break;
       } catch (error) {
-        if (error.message && error.message.includes('performance mark') && retries > 0) {
-          console.log(`Performance mark error detected, retrying... (${retries} retries left)`);
+        // Check for various performance mark errors (gather, navigate, etc.)
+        const isPerformanceMarkError = error.message && (
+          error.message.includes('performance mark') ||
+          error.message.includes('lh:runner:gather') ||
+          error.message.includes('lh:driver:navigate') ||
+          error.message.includes('lh:runner')
+        );
+        
+        if (isPerformanceMarkError && retries > 0) {
+          console.log(`Performance mark error detected (${error.message}), retrying... (${retries} retries left)`);
           retries--;
-          // Wait a bit longer before retry
-          await new Promise(resolve => setTimeout(resolve, 2000));
+          // Wait longer before retry and ensure Chrome is ready
+          await new Promise(resolve => setTimeout(resolve, 3000));
           continue;
         }
         throw error;
