@@ -15,6 +15,7 @@ services:
       - LIGHTHOUSE_TIMEOUT=${LIGHTHOUSE_TIMEOUT:-180000}
       - DEFAULT_DEVICE=${DEFAULT_DEVICE:-mobile}
       - LOG_LEVEL=${LOG_LEVEL:-info}
+      - MAX_CONCURRENT_AUDITS=${MAX_CONCURRENT_AUDITS:-5}
       
       # UI Customization (shown in Coolify UI with defaults)
       - PAGE_TITLE=${PAGE_TITLE:-Lighthouse Audit Tool}

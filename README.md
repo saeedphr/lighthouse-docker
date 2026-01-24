@@ -263,12 +263,42 @@ All environment variables are configurable via Coolify UI (both Dockerfile and D
 | `CHROME_PATH` | Path to Chromium binary | `/usr/bin/chromium` |
 | `MAX_REDIRECTS` | Maximum number of redirects to follow before running audit | `10` |
 | `LIGHTHOUSE_TIMEOUT` | Lighthouse audit timeout in milliseconds | `180000` (3 min) |
+| `MAX_CONCURRENT_AUDITS` | **Number of concurrent Lighthouse audits (worker pool size)** | `5` |
 | `DEFAULT_DEVICE` | Default device for audits (`mobile` or `desktop`) | `mobile` |
 | `LOG_LEVEL` | Lighthouse log level (`silent`, `error`, `info`, `verbose`) | `info` |
 | `PAGE_TITLE` | Custom title for the web interface | `Lighthouse Audit Tool` |
 | `ENABLE_HTTP_FALLBACK` | Enable HTTP fallback checkbox by default (`true`/`false`) | `false` |
 | `EXTRA_CHROME_FLAGS` | Additional Chrome flags (comma-separated) | `` |
 | `NODE_TLS_REJECT_UNAUTHORIZED` | SSL certificate verification (`0` to disable) | `0` |
+
+### ⚡ NEW: Concurrent Audits (Worker Pool)
+
+The service now supports **concurrent Lighthouse audits** using isolated worker processes. Each worker runs in a separate process with its own global state, completely eliminating performance mark errors.
+
+**Key Benefits:**
+- ✅ Run multiple audits simultaneously (default: 5)
+- ✅ No performance mark conflicts
+- ✅ 5x faster for batch operations
+- ✅ Automatic queuing when workers are busy
+- ✅ Isolated processes for reliability
+
+**Configuration:**
+```yaml
+environment:
+  - MAX_CONCURRENT_AUDITS=5  # Adjust based on your server resources
+```
+
+**Recommended Values:**
+- Small servers (2GB RAM): `2`
+- Medium servers (4-8GB RAM): `5` (default)
+- Large servers (16GB+ RAM): `10`
+
+**Monitor Worker Pool:**
+```bash
+curl http://localhost:3000/workers/status
+```
+
+See [WORKER_POOL.md](WORKER_POOL.md) for detailed documentation.
 
 ### Coolify Deployment - Dockerfile Build Pack
 

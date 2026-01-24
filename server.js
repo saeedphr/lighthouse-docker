@@ -2,16 +2,129 @@
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 const express = require('express');
-const lighthouse = require('lighthouse').default;
-const chromeLauncher = require('chrome-launcher');
+const { fork } = require('child_process');
+const path = require('path');
 const packageJson = require('./package.json');
 const https = require('https');
 const http = require('http');
 
 const app = express();
 
-// Lighthouse request queue to prevent concurrent execution conflicts
-// Lighthouse uses marky global state, so concurrent runs interfere with each other
+// Worker Pool for concurrent Lighthouse execution
+// Each worker runs in a separate process with isolated global state
+class LighthouseWorkerPool {
+  constructor(maxWorkers = 5) {
+    this.maxWorkers = maxWorkers;
+    this.activeWorkers = new Map(); // taskId -> worker
+    this.queue = [];
+    this.totalProcessed = 0;
+    this.totalFailed = 0;
+  }
+
+  async execute(taskId, url, device, outputFormat, options) {
+    // If we have capacity, start immediately
+    if (this.activeWorkers.size < this.maxWorkers) {
+      return this.spawnWorker(taskId, url, device, outputFormat, options);
+    }
+
+    // Otherwise, queue the task
+    console.log(`[WorkerPool] Task ${taskId} queued. Active: ${this.activeWorkers.size}/${this.maxWorkers}, Queue: ${this.queue.length}`);
+    
+    return new Promise((resolve, reject) => {
+      this.queue.push({ taskId, url, device, outputFormat, options, resolve, reject });
+    });
+  }
+
+  spawnWorker(taskId, url, device, outputFormat, options) {
+    return new Promise((resolve, reject) => {
+      console.log(`[WorkerPool] Spawning worker for task ${taskId}. Active: ${this.activeWorkers.size + 1}/${this.maxWorkers}`);
+
+      const worker = fork(path.join(__dirname, 'lighthouse-worker.js'));
+      this.activeWorkers.set(taskId, worker);
+
+      // Set timeout for the entire task
+      const timeout = setTimeout(() => {
+        console.error(`[WorkerPool] Task ${taskId} timed out`);
+        worker.kill();
+        this.activeWorkers.delete(taskId);
+        this.totalFailed++;
+        reject(new Error('Lighthouse audit timed out'));
+        this.processQueue();
+      }, options.timeout || 180000);
+
+      // Listen for results
+      worker.on('message', (message) => {
+        clearTimeout(timeout);
+        
+        if (message.success) {
+          console.log(`[WorkerPool] Task ${taskId} completed successfully`);
+          this.totalProcessed++;
+          resolve({
+            report: message.report,
+            lhr: message.lhr
+          });
+        } else {
+          console.error(`[WorkerPool] Task ${taskId} failed:`, message.error);
+          this.totalFailed++;
+          reject(new Error(message.error));
+        }
+        
+        this.activeWorkers.delete(taskId);
+        this.processQueue();
+      });
+
+      // Handle worker errors
+      worker.on('error', (error) => {
+        clearTimeout(timeout);
+        console.error(`[WorkerPool] Worker error for task ${taskId}:`, error);
+        this.activeWorkers.delete(taskId);
+        this.totalFailed++;
+        reject(error);
+        this.processQueue();
+      });
+
+      // Handle worker exit
+      worker.on('exit', (code) => {
+        clearTimeout(timeout);
+        if (code !== 0 && this.activeWorkers.has(taskId)) {
+          console.error(`[WorkerPool] Worker exited with code ${code} for task ${taskId}`);
+          this.activeWorkers.delete(taskId);
+          this.totalFailed++;
+          reject(new Error(`Worker process exited with code ${code}`));
+          this.processQueue();
+        }
+      });
+
+      // Send task to worker
+      worker.send({ taskId, url, device, outputFormat, options });
+    });
+  }
+
+  processQueue() {
+    // Process queued tasks if we have capacity
+    while (this.queue.length > 0 && this.activeWorkers.size < this.maxWorkers) {
+      const { taskId, url, device, outputFormat, options, resolve, reject } = this.queue.shift();
+      console.log(`[WorkerPool] Processing queued task ${taskId}. Queue remaining: ${this.queue.length}`);
+      
+      this.spawnWorker(taskId, url, device, outputFormat, options)
+        .then(resolve)
+        .catch(reject);
+    }
+  }
+
+  getStats() {
+    return {
+      maxWorkers: this.maxWorkers,
+      activeWorkers: this.activeWorkers.size,
+      queueLength: this.queue.length,
+      totalProcessed: this.totalProcessed,
+      totalFailed: this.totalFailed,
+      activeTasks: Array.from(this.activeWorkers.keys())
+    };
+  }
+}
+
+// Legacy queue class - keeping for backward compatibility but not used
 class LighthouseQueue {
   constructor() {
     this.queue = [];
@@ -84,7 +197,7 @@ class LighthouseQueue {
   }
 }
 
-const lighthouseQueue = new LighthouseQueue();
+const lighthouseWorkerPool = new LighthouseWorkerPool(parseInt(process.env.MAX_CONCURRENT_AUDITS) || 5);
 
 // Configuration via environment variables
 const PORT = parseInt(process.env.PORT) || 3000;
@@ -338,128 +451,23 @@ app.get('/', (req, res) => {
 });
 
 // Helper function to run Lighthouse audit (extracted for queue usage)
-async function runLighthouseAudit(url, device, outputFormat = 'html') {
-  // Follow redirects to get final URL
-  let finalUrl = url;
+// Helper function to resolve redirects (used before sending to worker)
+async function resolveUrl(url) {
   try {
-    const resolvedUrl = await getFinalUrl(url);
-    if (resolvedUrl !== url) {
-      console.log(`Following redirect: ${url} -> ${resolvedUrl}`);
-      finalUrl = resolvedUrl;
+    const finalUrl = await getFinalUrl(url);
+    if (finalUrl !== url) {
+      console.log(`Following redirect: ${url} -> ${finalUrl}`);
+      return finalUrl;
     }
   } catch (e) {
     console.log(`Could not follow redirects: ${e.message}, using original URL`);
   }
-
-  // Extract origin for security bypass
-  const urlOrigin = new URL(finalUrl).origin;
-  
-  // Device-specific settings
-  const isMobile = device === 'mobile';
-  const deviceSettings = isMobile ? {
-    formFactor: 'mobile',
-    screenEmulation: {
-      mobile: true,
-      width: 412,
-      height: 823,
-      deviceScaleFactor: 1.75,
-      disabled: false,
-    },
-    throttling: {
-      rttMs: 150,
-      throughputKbps: 1638.4,
-      cpuSlowdownMultiplier: 4,
-    },
-  } : {
-    formFactor: 'desktop',
-    screenEmulation: {
-      mobile: false,
-      width: 1350,
-      height: 940,
-      deviceScaleFactor: 1,
-      disabled: false,
-    },
-    throttling: {
-      rttMs: 40,
-      throughputKbps: 10240,
-      cpuSlowdownMultiplier: 1,
-    },
-  };
-  
-  // Launch headless Chrome
-  const chrome = await chromeLauncher.launch({
-    chromeFlags: getChromeFlags(urlOrigin)
-  });
-
-  console.log(`Chrome launched on port: ${chrome.port}`);
-
-  try {
-    // Small delay to ensure Chrome is fully ready
-    await new Promise(resolve => setTimeout(resolve, 1500));
-
-    const options = {
-      logLevel: LOG_LEVEL,
-      output: outputFormat,
-      onlyCategories: ['performance', 'accessibility', 'best-practices', 'seo'],
-      port: chrome.port,
-      formFactor: deviceSettings.formFactor,
-      screenEmulation: deviceSettings.screenEmulation,
-      throttling: deviceSettings.throttling,
-      preset: 'lighthouse:default', // Explicitly set preset to avoid performance mark errors
-      skipAboutBlank: false, // Ensure navigation marks are properly initialized
-      maxWaitForLoad: 45000, // Maximum time to wait for page load (45 seconds)
-      maxWaitForFcp: 30000, // Maximum time to wait for FCP (30 seconds)
-      maxWaitForLoadIdle: 2000 // Maximum time to wait for network idle (2 seconds)
-    };
-
-    // Run Lighthouse with retry logic for performance mark errors
-    let runnerResult;
-    let retries = 2;
-    while (retries >= 0) {
-      try {
-        runnerResult = await lighthouse(finalUrl, options);
-        break;
-      } catch (error) {
-        // Check for various performance mark errors (gather, navigate, etc.)
-        const isPerformanceMarkError = error.message && (
-          error.message.includes('performance mark') ||
-          error.message.includes('lh:runner:gather') ||
-          error.message.includes('lh:driver:navigate') ||
-          error.message.includes('lh:runner')
-        );
-        
-        if (isPerformanceMarkError && retries > 0) {
-          console.log(`Performance mark error detected (${error.message}), retrying... (${retries} retries left)`);
-          retries--;
-          // Wait longer before retry and ensure Chrome is ready
-          await new Promise(resolve => setTimeout(resolve, 3000));
-          continue;
-        }
-        throw error;
-      }
-    }
-    
-    if (!runnerResult || !runnerResult.lhr) {
-      console.error('Lighthouse failed to generate report - no result returned');
-      throw new Error('Lighthouse failed to generate report');
-    }
-    
-    console.log('Lighthouse completed successfully');
-    console.log('Final URL:', runnerResult.lhr.finalUrl);
-    console.log('Runtime errors:', runnerResult.lhr.runtimeError);
-    
-    return {
-      report: runnerResult.report,
-      lhr: runnerResult.lhr
-    };
-  } finally {
-    await chrome.kill();
-  }
+  return url;
 }
 
 // 2. Route to perform the audit
 app.get('/analyze', async (req, res) => {
-  const url = req.query.url;
+  let url = req.query.url;
   const device = req.query.device || DEFAULT_DEVICE;
 
   if (!url) {
@@ -470,18 +478,25 @@ app.get('/analyze', async (req, res) => {
   console.log(`[${taskId}] Request received for: ${url} (device: ${device})`);
 
   try {
-    // Queue the Lighthouse execution to prevent concurrent runs
-    const result = await lighthouseQueue.enqueue(async () => {
-      console.log(`[${taskId}] Starting Lighthouse audit for: ${url}`);
-      return await runLighthouseAudit(url, device, 'html');
-    }, taskId);
+    // Resolve redirects first
+    url = await resolveUrl(url);
+    const urlOrigin = new URL(url).origin;
+
+    // Prepare options for worker
+    const options = {
+      chromeFlags: getChromeFlags(urlOrigin),
+      logLevel: LOG_LEVEL,
+      timeout: LIGHTHOUSE_TIMEOUT
+    };
+
+    // Execute in worker pool
+    const result = await lighthouseWorkerPool.execute(taskId, url, device, 'html', options);
 
     console.log(`[${taskId}] Sending HTML report to client`);
-    // Send the HTML report directly
     res.setHeader('Content-Type', 'text/html');
     res.send(result.report);
   } catch (error) {
-    console.error(`[${taskId}] Error running lighthouse:`, error.message);
+    console.error(`[${taskId}] Error:`, error.message);
     console.error('Error stack:', error.stack);
     res.status(500).send(`Error generating report: ${error.message}<br><br>Check container logs for details: <code>docker logs lighthouse_docker</code>`);
   }
@@ -489,25 +504,30 @@ app.get('/analyze', async (req, res) => {
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-  const queueStats = lighthouseQueue.getStats();
+  const workerStats = lighthouseWorkerPool.getStats();
   res.status(200).json({
     status: 'healthy',
     version: VERSION,
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
-    queue: queueStats
+    workerPool: workerStats
   });
 });
 
-// Queue status endpoint
-app.get('/queue/status', (req, res) => {
-  const stats = lighthouseQueue.getStats();
+// Worker pool status endpoint
+app.get('/workers/status', (req, res) => {
+  const stats = lighthouseWorkerPool.getStats();
   res.status(200).json({
-    queue: stats,
-    message: stats.concurrentAttempts > 0 
-      ? `WARNING: ${stats.concurrentAttempts} concurrent attempts detected. Queue is working to prevent conflicts.`
-      : 'Queue is operating normally.'
+    workerPool: stats,
+    message: stats.activeWorkers === stats.maxWorkers
+      ? `All ${stats.maxWorkers} workers are busy. ${stats.queueLength} tasks queued.`
+      : `${stats.activeWorkers}/${stats.maxWorkers} workers active. ${stats.queueLength} tasks queued.`
   });
+});
+
+// Legacy queue status endpoint (redirects to workers status)
+app.get('/queue/status', (req, res) => {
+  res.redirect('/workers/status');
 });
 
 app.listen(PORT, '0.0.0.0', () => {
@@ -607,16 +627,19 @@ app.get('/api/analyze', async (req, res) => {
   console.log(`[${taskId}] API request received for: ${url} (device: ${device})`);
 
   try {
-    // Queue the Lighthouse execution to prevent concurrent runs
-    const result = await Promise.race([
-      lighthouseQueue.enqueue(async () => {
-        console.log(`[${taskId}] Starting Lighthouse audit for: ${url}`);
-        return await runLighthouseAudit(url, device, 'json');
-      }, taskId),
-      new Promise((_, reject) => 
-        setTimeout(() => reject(new Error(`Lighthouse audit timed out after ${LIGHTHOUSE_TIMEOUT / 1000} seconds`)), LIGHTHOUSE_TIMEOUT)
-      )
-    ]);
+    // Resolve redirects first
+    url = await resolveUrl(url);
+    const urlOrigin = new URL(url).origin;
+
+    // Prepare options for worker
+    const options = {
+      chromeFlags: getChromeFlags(urlOrigin),
+      logLevel: LOG_LEVEL,
+      timeout: LIGHTHOUSE_TIMEOUT
+    };
+
+    // Execute in worker pool
+    const result = await lighthouseWorkerPool.execute(taskId, url, device, 'json', options);
 
     const lhr = result.lhr;
     console.log(`[${taskId}] API Report completed for`, lhr.finalUrl);
