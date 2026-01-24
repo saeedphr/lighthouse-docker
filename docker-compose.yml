@@ -1,6 +1,9 @@
 services:
   lighthouse:
-    image: saeedp/lighthouse-docker:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # image: saeedp/lighthouse-docker:latest  # Commented out - building from source instead
     container_name: lighthouse_docker
     ports:
       - "3000:3000"
