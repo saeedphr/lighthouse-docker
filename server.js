@@ -54,43 +54,56 @@ class LighthouseWorkerPool {
 
       // Listen for results
       worker.on('message', (message) => {
+        console.log(`[WorkerPool] Received message from worker for task ${taskId}:`, message.success ? 'SUCCESS' : 'FAILURE');
         clearTimeout(timeout);
+        
+        // Only process if task is still active (not already handled)
+        if (!this.activeWorkers.has(taskId)) {
+          console.warn(`[WorkerPool] Task ${taskId} message received but task no longer active`);
+          return;
+        }
         
         if (message.success) {
           console.log(`[WorkerPool] Task ${taskId} completed successfully`);
           this.totalProcessed++;
+          this.activeWorkers.delete(taskId);
           resolve({
             report: message.report,
             lhr: message.lhr
           });
+          this.processQueue();
         } else {
           console.error(`[WorkerPool] Task ${taskId} failed:`, message.error);
           this.totalFailed++;
+          this.activeWorkers.delete(taskId);
           reject(new Error(message.error));
+          this.processQueue();
         }
-        
-        this.activeWorkers.delete(taskId);
-        this.processQueue();
       });
 
       // Handle worker errors
       worker.on('error', (error) => {
         clearTimeout(timeout);
         console.error(`[WorkerPool] Worker error for task ${taskId}:`, error);
-        this.activeWorkers.delete(taskId);
-        this.totalFailed++;
-        reject(error);
-        this.processQueue();
+        if (this.activeWorkers.has(taskId)) {
+          this.activeWorkers.delete(taskId);
+          this.totalFailed++;
+          reject(error);
+          this.processQueue();
+        }
       });
 
       // Handle worker exit
-      worker.on('exit', (code) => {
+      worker.on('exit', (code, signal) => {
+        console.log(`[WorkerPool] Worker exited for task ${taskId}. Code: ${code}, Signal: ${signal}`);
         clearTimeout(timeout);
-        if (code !== 0 && this.activeWorkers.has(taskId)) {
-          console.error(`[WorkerPool] Worker exited with code ${code} for task ${taskId}`);
+        
+        // Only handle if task is still active (message wasn't received)
+        if (this.activeWorkers.has(taskId)) {
+          console.error(`[WorkerPool] Task ${taskId} - worker exited unexpectedly before completing`);
           this.activeWorkers.delete(taskId);
           this.totalFailed++;
-          reject(new Error(`Worker process exited with code ${code}`));
+          reject(new Error(`Worker process exited ${signal ? 'with signal ' + signal : 'with code ' + code} before completing`));
           this.processQueue();
         }
       });

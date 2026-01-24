@@ -101,27 +101,44 @@ process.on('message', async (message) => {
     console.log(`[Worker ${process.pid}] Task ${taskId} completed successfully`);
 
     // Send result back to parent
-    process.send({
-      success: true,
-      taskId,
-      report: runnerResult.report,
-      lhr: runnerResult.lhr
-    });
+    if (process.send) {
+      console.log(`[Worker ${process.pid}] Sending result back to parent for task ${taskId}`);
+      process.send({
+        success: true,
+        taskId,
+        report: runnerResult.report,
+        lhr: runnerResult.lhr
+      });
+      
+      // Wait a bit to ensure message is sent before exiting
+      await new Promise(resolve => setTimeout(resolve, 100));
+    } else {
+      console.error(`[Worker ${process.pid}] No process.send available - cannot communicate with parent`);
+    }
 
   } catch (error) {
     console.error(`[Worker ${process.pid}] Task ${taskId} failed:`, error.message);
     
     // Send error back to parent
-    process.send({
-      success: false,
-      taskId,
-      error: error.message,
-      stack: error.stack
-    });
+    if (process.send) {
+      console.log(`[Worker ${process.pid}] Sending error back to parent for task ${taskId}`);
+      process.send({
+        success: false,
+        taskId,
+        error: error.message,
+        stack: error.stack
+      });
+      
+      // Wait a bit to ensure message is sent before exiting
+      await new Promise(resolve => setTimeout(resolve, 100));
+    } else {
+      console.error(`[Worker ${process.pid}] No process.send available - cannot communicate with parent`);
+    }
   } finally {
     if (chrome) {
       await chrome.kill();
     }
+    console.log(`[Worker ${process.pid}] Exiting...`);
     // Exit the worker process after completing the task
     process.exit(0);
   }
