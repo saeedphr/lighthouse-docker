@@ -16,11 +16,23 @@ class LighthouseQueue {
   constructor() {
     this.queue = [];
     this.processing = false;
+    this.currentTask = null;
+    this.totalProcessed = 0;
+    this.concurrentAttempts = 0;
   }
 
-  async enqueue(task) {
+  async enqueue(task, taskId) {
+    const queuePosition = this.queue.length;
+    console.log(`[Queue] Task ${taskId} enqueued. Position: ${queuePosition}, Currently processing: ${this.processing ? 'YES' : 'NO'}`);
+    
+    // Detect concurrent attempts
+    if (this.processing) {
+      this.concurrentAttempts++;
+      console.warn(`[Queue] CONCURRENT ATTEMPT DETECTED! Task ${taskId} will wait. Total concurrent attempts: ${this.concurrentAttempts}`);
+    }
+    
     return new Promise((resolve, reject) => {
-      this.queue.push({ task, resolve, reject });
+      this.queue.push({ task, resolve, reject, taskId, enqueuedAt: Date.now() });
       this.process();
     });
   }
@@ -31,15 +43,23 @@ class LighthouseQueue {
     }
 
     this.processing = true;
-    const { task, resolve, reject } = this.queue.shift();
+    const { task, resolve, reject, taskId, enqueuedAt } = this.queue.shift();
+    this.currentTask = taskId;
+    
+    const waitTime = Date.now() - enqueuedAt;
+    console.log(`[Queue] Processing task ${taskId}. Wait time: ${waitTime}ms. Queue remaining: ${this.queue.length}`);
 
     try {
       const result = await task();
+      this.totalProcessed++;
+      console.log(`[Queue] Task ${taskId} completed successfully. Total processed: ${this.totalProcessed}`);
       resolve(result);
     } catch (error) {
+      console.error(`[Queue] Task ${taskId} failed:`, error.message);
       reject(error);
     } finally {
       this.processing = false;
+      this.currentTask = null;
       // Process next item in queue
       setImmediate(() => this.process());
     }
@@ -51,6 +71,16 @@ class LighthouseQueue {
 
   isProcessing() {
     return this.processing;
+  }
+  
+  getStats() {
+    return {
+      queueLength: this.queue.length,
+      processing: this.processing,
+      currentTask: this.currentTask,
+      totalProcessed: this.totalProcessed,
+      concurrentAttempts: this.concurrentAttempts
+    };
   }
 }
 
@@ -436,26 +466,22 @@ app.get('/analyze', async (req, res) => {
     return res.status(400).send('Please provide a URL via the ?url= parameter');
   }
 
-  const queuePosition = lighthouseQueue.getQueueLength();
-  const isProcessing = lighthouseQueue.isProcessing();
-  
-  if (queuePosition > 0 || isProcessing) {
-    console.log(`Audit queued for: ${url} (device: ${device}). Queue position: ${queuePosition + 1}`);
-  } else {
-    console.log(`Starting audit for: ${url} (device: ${device})`);
-  }
+  const taskId = `HTML-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  console.log(`[${taskId}] Request received for: ${url} (device: ${device})`);
 
   try {
     // Queue the Lighthouse execution to prevent concurrent runs
     const result = await lighthouseQueue.enqueue(async () => {
+      console.log(`[${taskId}] Starting Lighthouse audit for: ${url}`);
       return await runLighthouseAudit(url, device, 'html');
-    });
+    }, taskId);
 
+    console.log(`[${taskId}] Sending HTML report to client`);
     // Send the HTML report directly
     res.setHeader('Content-Type', 'text/html');
     res.send(result.report);
   } catch (error) {
-    console.error('Error running lighthouse:', error);
+    console.error(`[${taskId}] Error running lighthouse:`, error.message);
     console.error('Error stack:', error.stack);
     res.status(500).send(`Error generating report: ${error.message}<br><br>Check container logs for details: <code>docker logs lighthouse_docker</code>`);
   }
@@ -463,11 +489,24 @@ app.get('/analyze', async (req, res) => {
 
 // Health check endpoint
 app.get('/health', (req, res) => {
+  const queueStats = lighthouseQueue.getStats();
   res.status(200).json({
     status: 'healthy',
     version: VERSION,
     uptime: process.uptime(),
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    queue: queueStats
+  });
+});
+
+// Queue status endpoint
+app.get('/queue/status', (req, res) => {
+  const stats = lighthouseQueue.getStats();
+  res.status(200).json({
+    queue: stats,
+    message: stats.concurrentAttempts > 0 
+      ? `WARNING: ${stats.concurrentAttempts} concurrent attempts detected. Queue is working to prevent conflicts.`
+      : 'Queue is operating normally.'
   });
 });
 
@@ -564,28 +603,23 @@ app.get('/api/analyze', async (req, res) => {
     return res.status(400).json({ error: 'Please provide a URL via the ?url= parameter' });
   }
 
-  const queuePosition = lighthouseQueue.getQueueLength();
-  const isProcessing = lighthouseQueue.isProcessing();
-  
-  if (queuePosition > 0 || isProcessing) {
-    console.log(`API audit queued for: ${url} (device: ${device}). Queue position: ${queuePosition + 1}`);
-  } else {
-    console.log(`Starting API audit for: ${url} (device: ${device})`);
-  }
+  const taskId = `JSON-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  console.log(`[${taskId}] API request received for: ${url} (device: ${device})`);
 
   try {
     // Queue the Lighthouse execution to prevent concurrent runs
     const result = await Promise.race([
       lighthouseQueue.enqueue(async () => {
+        console.log(`[${taskId}] Starting Lighthouse audit for: ${url}`);
         return await runLighthouseAudit(url, device, 'json');
-      }),
+      }, taskId),
       new Promise((_, reject) => 
         setTimeout(() => reject(new Error(`Lighthouse audit timed out after ${LIGHTHOUSE_TIMEOUT / 1000} seconds`)), LIGHTHOUSE_TIMEOUT)
       )
     ]);
 
     const lhr = result.lhr;
-    console.log('API Report is done for', lhr.finalUrl);
+    console.log(`[${taskId}] API Report completed for`, lhr.finalUrl);
 
     // If specific metrics requested, filter the response
     if (metricsParam) {
