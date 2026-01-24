@@ -1,6 +1,6 @@
 {
   "name": "lighthouse-docker",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Lightweight containerized Google Lighthouse audit service with web interface and REST API",
   "main": "server.js",
   "author": "Your Name",

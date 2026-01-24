@@ -3,7 +3,7 @@
 A lightweight, containerized Google Lighthouse audit service built on Alpine Linux with Node.js. Run web performance audits through a simple web interface or REST API.
 
 [![Docker Hub](https://img.shields.io/badge/docker-saeedp%2Flighthouse--docker-blue)](https://hub.docker.com/r/saeedp/lighthouse-docker)
-[![Version](https://img.shields.io/badge/version-1.3.0-green)](https://github.com/saeedphr/lighthouse-docker)
+[![Version](https://img.shields.io/badge/version-1.4.0-green)](https://github.com/saeedphr/lighthouse-docker)
 
 ## ✨ Features
 
@@ -543,6 +543,16 @@ MIT License - feel free to use and modify.
 Contributions are welcome! Feel free to submit issues and pull requests.
 
 ## 📊 Changelog
+
+### v1.4.0 (2026-01-24)
+- **Worker Pool Implementation**: Concurrent Lighthouse audits using isolated processes
+- **NEW**: `MAX_CONCURRENT_AUDITS` environment variable (default: 5)
+- **NEW**: `/workers/status` endpoint for monitoring
+- **FIXED**: Performance mark errors (`lh:runner:gather`, `lh:driver:navigate`)
+- **Added**: `lighthouse-worker.js` for isolated process execution
+- **Performance**: 5x faster for batch operations
+- Enhanced logging with task IDs
+- Comprehensive documentation (WORKER_POOL.md, QUICKSTART.md, TESTING.md)
 
 ### v1.0.0 (2026-01-19)
 - Initial release
