@@ -10,6 +10,52 @@ const http = require('http');
 
 const app = express();
 
+// Lighthouse request queue to prevent concurrent execution conflicts
+// Lighthouse uses marky global state, so concurrent runs interfere with each other
+class LighthouseQueue {
+  constructor() {
+    this.queue = [];
+    this.processing = false;
+  }
+
+  async enqueue(task) {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ task, resolve, reject });
+      this.process();
+    });
+  }
+
+  async process() {
+    if (this.processing || this.queue.length === 0) {
+      return;
+    }
+
+    this.processing = true;
+    const { task, resolve, reject } = this.queue.shift();
+
+    try {
+      const result = await task();
+      resolve(result);
+    } catch (error) {
+      reject(error);
+    } finally {
+      this.processing = false;
+      // Process next item in queue
+      setImmediate(() => this.process());
+    }
+  }
+
+  getQueueLength() {
+    return this.queue.length;
+  }
+
+  isProcessing() {
+    return this.processing;
+  }
+}
+
+const lighthouseQueue = new LighthouseQueue();
+
 // Configuration via environment variables
 const PORT = parseInt(process.env.PORT) || 3000;
 const VERSION = packageJson.version || '1.0.0';
@@ -261,30 +307,22 @@ app.get('/', (req, res) => {
     `);
 });
 
-// 2. Route to perform the audit
-app.get('/analyze', async (req, res) => {
-  let url = req.query.url;
-  const device = req.query.device || DEFAULT_DEVICE;
-
-  if (!url) {
-    return res.status(400).send('Please provide a URL via the ?url= parameter');
-  }
-
-  console.log(`Starting audit for: ${url} (device: ${device})`);
-
+// Helper function to run Lighthouse audit (extracted for queue usage)
+async function runLighthouseAudit(url, device, outputFormat = 'html') {
   // Follow redirects to get final URL
+  let finalUrl = url;
   try {
-    const finalUrl = await getFinalUrl(url);
-    if (finalUrl !== url) {
-      console.log(`Following redirect: ${url} -> ${finalUrl}`);
-      url = finalUrl;
+    const resolvedUrl = await getFinalUrl(url);
+    if (resolvedUrl !== url) {
+      console.log(`Following redirect: ${url} -> ${resolvedUrl}`);
+      finalUrl = resolvedUrl;
     }
   } catch (e) {
     console.log(`Could not follow redirects: ${e.message}, using original URL`);
   }
 
   // Extract origin for security bypass
-  const urlOrigin = new URL(url).origin;
+  const urlOrigin = new URL(finalUrl).origin;
   
   // Device-specific settings
   const isMobile = device === 'mobile';
@@ -318,21 +356,20 @@ app.get('/analyze', async (req, res) => {
     },
   };
   
-  let chrome;
+  // Launch headless Chrome
+  const chrome = await chromeLauncher.launch({
+    chromeFlags: getChromeFlags(urlOrigin)
+  });
+
+  console.log(`Chrome launched on port: ${chrome.port}`);
+
   try {
-    // Launch headless Chrome
-    chrome = await chromeLauncher.launch({
-      chromeFlags: getChromeFlags(urlOrigin)
-    });
-
-    console.log(`Chrome launched on port: ${chrome.port}`);
-
     // Small delay to ensure Chrome is fully ready
     await new Promise(resolve => setTimeout(resolve, 1500));
 
     const options = {
       logLevel: LOG_LEVEL,
-      output: 'html',
+      output: outputFormat,
       onlyCategories: ['performance', 'accessibility', 'best-practices', 'seo'],
       port: chrome.port,
       formFactor: deviceSettings.formFactor,
@@ -350,7 +387,7 @@ app.get('/analyze', async (req, res) => {
     let retries = 2;
     while (retries >= 0) {
       try {
-        runnerResult = await lighthouse(url, options);
+        runnerResult = await lighthouse(finalUrl, options);
         break;
       } catch (error) {
         // Check for various performance mark errors (gather, navigate, etc.)
@@ -381,20 +418,45 @@ app.get('/analyze', async (req, res) => {
     console.log('Final URL:', runnerResult.lhr.finalUrl);
     console.log('Runtime errors:', runnerResult.lhr.runtimeError);
     
-    const reportHtml = runnerResult.report;
-
-    console.log('Report is done for', runnerResult.lhr.finalUrl);
-    
+    return {
+      report: runnerResult.report,
+      lhr: runnerResult.lhr
+    };
+  } finally {
     await chrome.kill();
+  }
+}
+
+// 2. Route to perform the audit
+app.get('/analyze', async (req, res) => {
+  const url = req.query.url;
+  const device = req.query.device || DEFAULT_DEVICE;
+
+  if (!url) {
+    return res.status(400).send('Please provide a URL via the ?url= parameter');
+  }
+
+  const queuePosition = lighthouseQueue.getQueueLength();
+  const isProcessing = lighthouseQueue.isProcessing();
+  
+  if (queuePosition > 0 || isProcessing) {
+    console.log(`Audit queued for: ${url} (device: ${device}). Queue position: ${queuePosition + 1}`);
+  } else {
+    console.log(`Starting audit for: ${url} (device: ${device})`);
+  }
+
+  try {
+    // Queue the Lighthouse execution to prevent concurrent runs
+    const result = await lighthouseQueue.enqueue(async () => {
+      return await runLighthouseAudit(url, device, 'html');
+    });
 
     // Send the HTML report directly
     res.setHeader('Content-Type', 'text/html');
-    res.send(reportHtml);
-
+    res.send(result.report);
   } catch (error) {
     console.error('Error running lighthouse:', error);
     console.error('Error stack:', error.stack);
-    if (chrome) await chrome.kill();
     res.status(500).send(`Error generating report: ${error.message}<br><br>Check container logs for details: <code>docker logs lighthouse_docker</code>`);
   }
 });
@@ -494,7 +556,7 @@ app.get('/debug/check', async (req, res) => {
 
 // 3. API Route to get JSON results
 app.get('/api/analyze', async (req, res) => {
-  let url = req.query.url;
+  const url = req.query.url;
   const metricsParam = req.query.metrics;
   const device = req.query.device || DEFAULT_DEVICE;
 
@@ -502,120 +564,28 @@ app.get('/api/analyze', async (req, res) => {
     return res.status(400).json({ error: 'Please provide a URL via the ?url= parameter' });
   }
 
-  console.log(`Starting API audit for: ${url} (device: ${device})`);
-
-  // Follow redirects to get final URL
-  try {
-    const finalUrl = await getFinalUrl(url);
-    if (finalUrl !== url) {
-      console.log(`Following redirect: ${url} -> ${finalUrl}`);
-      url = finalUrl;
-    }
-  } catch (e) {
-    console.log(`Could not follow redirects: ${e.message}, using original URL`);
+  const queuePosition = lighthouseQueue.getQueueLength();
+  const isProcessing = lighthouseQueue.isProcessing();
+  
+  if (queuePosition > 0 || isProcessing) {
+    console.log(`API audit queued for: ${url} (device: ${device}). Queue position: ${queuePosition + 1}`);
+  } else {
+    console.log(`Starting API audit for: ${url} (device: ${device})`);
   }
 
-  // Extract origin for security bypass
-  const urlOrigin = new URL(url).origin;
-  
-  // Device-specific settings
-  const isMobile = device === 'mobile';
-  const deviceSettings = isMobile ? {
-    formFactor: 'mobile',
-    screenEmulation: {
-      mobile: true,
-      width: 412,
-      height: 823,
-      deviceScaleFactor: 1.75,
-      disabled: false,
-    },
-    throttling: {
-      rttMs: 150,
-      throughputKbps: 1638.4,
-      cpuSlowdownMultiplier: 4,
-    },
-  } : {
-    formFactor: 'desktop',
-    screenEmulation: {
-      mobile: false,
-      width: 1350,
-      height: 940,
-      deviceScaleFactor: 1,
-      disabled: false,
-    },
-    throttling: {
-      rttMs: 40,
-      throughputKbps: 10240,
-      cpuSlowdownMultiplier: 1,
-    },
-  };
-
-  let chrome;
   try {
-    // Launch headless Chrome
-    chrome = await chromeLauncher.launch({
-      chromeFlags: getChromeFlags(urlOrigin)
-    });
+    // Queue the Lighthouse execution to prevent concurrent runs
+    const result = await Promise.race([
+      lighthouseQueue.enqueue(async () => {
+        return await runLighthouseAudit(url, device, 'json');
+      }),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error(`Lighthouse audit timed out after ${LIGHTHOUSE_TIMEOUT / 1000} seconds`)), LIGHTHOUSE_TIMEOUT)
+      )
+    ]);
 
-    // Small delay to ensure Chrome is fully ready
-    await new Promise(resolve => setTimeout(resolve, 1500));
-
-    const options = {
-      logLevel: LOG_LEVEL,
-      output: 'json',
-      onlyCategories: ['performance', 'accessibility', 'best-practices', 'seo'],
-      port: chrome.port,
-      formFactor: deviceSettings.formFactor,
-      screenEmulation: deviceSettings.screenEmulation,
-      throttling: deviceSettings.throttling,
-      preset: 'lighthouse:default', // Explicitly set preset to avoid performance mark errors
-      skipAboutBlank: false, // Ensure navigation marks are properly initialized
-      maxWaitForLoad: 45000, // Maximum time to wait for page load (45 seconds)
-      maxWaitForFcp: 30000, // Maximum time to wait for FCP (30 seconds)
-      maxWaitForLoadIdle: 2000 // Maximum time to wait for network idle (2 seconds)
-    };
-
-    // Run Lighthouse with timeout and retry logic for performance mark errors
-    let runnerResult;
-    let retries = 2;
-    while (retries >= 0) {
-      try {
-        runnerResult = await Promise.race([
-          lighthouse(url, options),
-          new Promise((_, reject) => 
-            setTimeout(() => reject(new Error(`Lighthouse audit timed out after ${LIGHTHOUSE_TIMEOUT / 1000} seconds`)), LIGHTHOUSE_TIMEOUT)
-          )
-        ]);
-        break;
-      } catch (error) {
-        // Check for various performance mark errors (gather, navigate, etc.)
-        const isPerformanceMarkError = error.message && (
-          error.message.includes('performance mark') ||
-          error.message.includes('lh:runner:gather') ||
-          error.message.includes('lh:driver:navigate') ||
-          error.message.includes('lh:runner')
-        );
-        
-        if (isPerformanceMarkError && retries > 0) {
-          console.log(`Performance mark error detected (${error.message}), retrying... (${retries} retries left)`);
-          retries--;
-          // Wait longer before retry and ensure Chrome is ready
-          await new Promise(resolve => setTimeout(resolve, 3000));
-          continue;
-        }
-        throw error;
-      }
-    }
-    
-    if (!runnerResult || !runnerResult.lhr) {
-      throw new Error('Lighthouse failed to generate report');
-    }
-    
-    const lhr = runnerResult.lhr;
-
+    const lhr = result.lhr;
     console.log('API Report is done for', lhr.finalUrl);
-    
-    await chrome.kill();
 
     // If specific metrics requested, filter the response
     if (metricsParam) {
@@ -675,7 +645,7 @@ app.get('/api/analyze', async (req, res) => {
 
   } catch (error) {
     console.error('Error running lighthouse API:', error);
-    if (chrome) await chrome.kill();
+    console.error('Error stack:', error.stack);
     res.status(500).json({ error: 'Error generating report', message: error.message });
   }
 });
