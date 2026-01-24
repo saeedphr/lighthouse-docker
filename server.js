@@ -327,6 +327,9 @@ app.get('/analyze', async (req, res) => {
 
     console.log(`Chrome launched on port: ${chrome.port}`);
 
+    // Small delay to ensure Chrome is fully ready
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
     const options = {
       logLevel: LOG_LEVEL,
       output: 'html',
@@ -334,11 +337,28 @@ app.get('/analyze', async (req, res) => {
       port: chrome.port,
       formFactor: deviceSettings.formFactor,
       screenEmulation: deviceSettings.screenEmulation,
-      throttling: deviceSettings.throttling
+      throttling: deviceSettings.throttling,
+      preset: 'lighthouse:default' // Explicitly set preset to avoid performance mark errors
     };
 
-    // Run Lighthouse
-    const runnerResult = await lighthouse(url, options);
+    // Run Lighthouse with retry logic for performance mark errors
+    let runnerResult;
+    let retries = 2;
+    while (retries >= 0) {
+      try {
+        runnerResult = await lighthouse(url, options);
+        break;
+      } catch (error) {
+        if (error.message && error.message.includes('performance mark') && retries > 0) {
+          console.log(`Performance mark error detected, retrying... (${retries} retries left)`);
+          retries--;
+          // Wait a bit longer before retry
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          continue;
+        }
+        throw error;
+      }
+    }
     
     if (!runnerResult || !runnerResult.lhr) {
       console.error('Lighthouse failed to generate report - no result returned');
@@ -525,6 +545,9 @@ app.get('/api/analyze', async (req, res) => {
       chromeFlags: getChromeFlags(urlOrigin)
     });
 
+    // Small delay to ensure Chrome is fully ready
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
     const options = {
       logLevel: LOG_LEVEL,
       output: 'json',
@@ -532,16 +555,33 @@ app.get('/api/analyze', async (req, res) => {
       port: chrome.port,
       formFactor: deviceSettings.formFactor,
       screenEmulation: deviceSettings.screenEmulation,
-      throttling: deviceSettings.throttling
+      throttling: deviceSettings.throttling,
+      preset: 'lighthouse:default' // Explicitly set preset to avoid performance mark errors
     };
 
-    // Run Lighthouse with timeout
-    const runnerResult = await Promise.race([
-      lighthouse(url, options),
-      new Promise((_, reject) => 
-        setTimeout(() => reject(new Error(`Lighthouse audit timed out after ${LIGHTHOUSE_TIMEOUT / 1000} seconds`)), LIGHTHOUSE_TIMEOUT)
-      )
-    ]);
+    // Run Lighthouse with timeout and retry logic for performance mark errors
+    let runnerResult;
+    let retries = 2;
+    while (retries >= 0) {
+      try {
+        runnerResult = await Promise.race([
+          lighthouse(url, options),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error(`Lighthouse audit timed out after ${LIGHTHOUSE_TIMEOUT / 1000} seconds`)), LIGHTHOUSE_TIMEOUT)
+          )
+        ]);
+        break;
+      } catch (error) {
+        if (error.message && error.message.includes('performance mark') && retries > 0) {
+          console.log(`Performance mark error detected, retrying... (${retries} retries left)`);
+          retries--;
+          // Wait a bit longer before retry
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          continue;
+        }
+        throw error;
+      }
+    }
     
     if (!runnerResult || !runnerResult.lhr) {
       throw new Error('Lighthouse failed to generate report');
