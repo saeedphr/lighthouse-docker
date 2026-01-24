@@ -628,7 +628,7 @@ app.get('/debug/check', async (req, res) => {
 
 // 3. API Route to get JSON results
 app.get('/api/analyze', async (req, res) => {
-  const url = req.query.url;
+  let url = req.query.url;  // Changed from const to let to allow reassignment
   const metricsParam = req.query.metrics;
   const device = req.query.device || DEFAULT_DEVICE;
 

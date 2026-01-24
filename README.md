@@ -263,7 +263,7 @@ All environment variables are configurable via Coolify UI (both Dockerfile and D
 | `CHROME_PATH` | Path to Chromium binary | `/usr/bin/chromium` |
 | `MAX_REDIRECTS` | Maximum number of redirects to follow before running audit | `10` |
 | `LIGHTHOUSE_TIMEOUT` | Lighthouse audit timeout in milliseconds | `180000` (3 min) |
-| `MAX_CONCURRENT_AUDITS` | **Number of concurrent Lighthouse audits (worker pool size)** | `5` |
+| `MAX_CONCURRENT_AUDITS` | **Number of concurrent Lighthouse audits (worker pool size)** | `2` |
 | `DEFAULT_DEVICE` | Default device for audits (`mobile` or `desktop`) | `mobile` |
 | `LOG_LEVEL` | Lighthouse log level (`silent`, `error`, `info`, `verbose`) | `info` |
 | `PAGE_TITLE` | Custom title for the web interface | `Lighthouse Audit Tool` |
@@ -276,22 +276,43 @@ All environment variables are configurable via Coolify UI (both Dockerfile and D
 The service now supports **concurrent Lighthouse audits** using isolated worker processes. Each worker runs in a separate process with its own global state, completely eliminating performance mark errors.
 
 **Key Benefits:**
-- ✅ Run multiple audits simultaneously (default: 5)
+- ✅ Run multiple audits simultaneously (default: 2)
 - ✅ No performance mark conflicts
-- ✅ 5x faster for batch operations
+- ✅ Faster for batch operations
 - ✅ Automatic queuing when workers are busy
 - ✅ Isolated processes for reliability
+
+**⚠️ Important: Accuracy vs Speed Trade-off**
+
+Running multiple audits concurrently **will affect the results**:
+- **More concurrent audits** = faster completion but **lower/inconsistent scores**
+- **Fewer concurrent audits** = slower completion but **more accurate scores**
+
+This happens because:
+- Multiple Chrome instances compete for CPU/RAM
+- System load affects page loading times
+- Lighthouse measures the actual performance (including system load)
+
+**Recommendation:**
+- For **production monitoring** or **comparing results**: Use `MAX_CONCURRENT_AUDITS=1` (sequential)
+- For **batch testing many sites**: Use `MAX_CONCURRENT_AUDITS=2` (balanced) ⭐ Default
+- For **quick checks** (non-critical): Use `MAX_CONCURRENT_AUDITS=3-5` (fast)
 
 **Configuration:**
 ```yaml
 environment:
-  - MAX_CONCURRENT_AUDITS=5  # Adjust based on your server resources
+  - MAX_CONCURRENT_AUDITS=2  # Adjust based on your server resources
 ```
 
 **Recommended Values:**
-- Small servers (2GB RAM): `2`
-- Medium servers (4-8GB RAM): `5` (default)
-- Large servers (16GB+ RAM): `10`
+- **Accuracy priority** (1-2GB RAM): `1` (sequential)
+- **Balanced** (2-4GB RAM): `2` (default) ⭐ Recommended
+- **Speed priority** (4-8GB RAM): `3-5`
+- **Large servers** (16GB+ RAM): `10`
+
+**Trade-off:**
+- Higher values = faster batch processing but less accurate results
+- Lower values = slower but more accurate and consistent results
 
 **Monitor Worker Pool:**
 ```bash
